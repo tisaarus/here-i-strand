@@ -2,6 +2,8 @@
 
 Library that provides a [Strands](https://github.com/strands-agents) agent for AWS Bedrock Agent Core with DynamoDB status tracking, S3 session persistence, and a concurrent tool executor with per-tool timeouts (HIS: *here-i-strand*).
 
+**Repository:** [github.com/tisaarus/here-i-strand](https://github.com/tisaarus/here-i-strand)
+
 ## Installation
 
 ```bash
@@ -66,6 +68,12 @@ here-i-strand/
 uv sync --all-groups
 uv run pytest tests/ -v
 ```
+
+## Authors
+
+- [Lorenzo Pizarro Martin](mailto:lorenzo.pizarro.martin@gmail.com)
+- [Antonio Calavia Robert](mailto:calavia88@gmail.com)
+- [Manuel Sierra Lavado](mailto:yosierr@gmail.com)
 
 ## License
 
