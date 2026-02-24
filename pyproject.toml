@@ -1,0 +1,50 @@
+[project]
+name = "here-i-strand"
+version = "0.1.1"
+description = "here-i-strand (HIS) agent module. Provides a custom Strands agent with DynamoDB status tracking, S3 session persistence and a concurrent tool executor with per-tool timeouts"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "Lorenzo Pizarro Martin", email = "lorenzo.pizarro.martin@gmail.com" },
+    { name = "Antonio Calavia Robert", email = "calavia88@gmail.com" },
+    { name = "Manuel Sierra Lavado", email = "yosierr@gmail.com" },
+]
+keywords = ["bedrock", "strands", "agent", "aws", "dynamodb", "s3"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+
+dependencies = [
+    "aws-opentelemetry-distro>=0.12.1",
+    "bedrock-agentcore==1.0.7",
+    "mcp==1.23.0",
+    "pydantic==2.12.5",
+    "pydantic-settings~=2.12.0",
+    "boto3==1.42.39",
+    "strands-agents==1.24.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["his*"]
+
+[tool.uv]
+# You can add uv-specific config here if needed.
