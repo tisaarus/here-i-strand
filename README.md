@@ -25,13 +25,14 @@ agent = HISAgent(
     status_dynamo_table_name=os.environ["STATUS_DYNAMO_TABLE_NAME"],
     session_id="my-session-id",
     name=os.environ.get("AGENT_NAME", "my-agent"),
+    agent_id=os.environ.get("AGENT_ID"),  # Optional: unique identifier for the agent instance
     tools=[...],
 )
 ```
 
 ## Configuration
 
-The library does not provide a settings layer. Pass `bucket_name`, `status_dynamo_table_name`, `session_id`, and optionally `name` (and any other `HISAgent` arguments) from your own config:
+The library does not provide a settings layer. Pass `bucket_name`, `status_dynamo_table_name`, `session_id`, and optionally `name`, `agent_id` (and any other `HISAgent` arguments) from your own config:
 
 - Environment variables
 - A `.env` file loaded by your app (e.g. `python-dotenv`, `pydantic-settings`)
@@ -58,9 +59,9 @@ here-i-strand/
 
 ## Main components
 
-- **`HISAgent`**: Strands agent with a DynamoDB ping thread and S3 sessions. You pass `status_dynamo_table_name`, `bucket_name`, `session_id`, and optionally `name` so the ping and tracker use your table and bucket.
+- **`HISAgent`**: Strands agent with a DynamoDB ping thread and S3 sessions. You pass `status_dynamo_table_name`, `bucket_name`, `session_id`, and optionally `name` and `agent_id` so the ping and tracker use your table and bucket.
 - **`TimeoutConcurrentToolExecutor`**: Tool executor with a per-invocation timeout; if a tool exceeds the limit, an error is returned and execution continues with the rest.
-- **`event_loop_tracker`**: Callback that writes event-loop milestones (init, start, message, result, force_stop) to DynamoDB and stops the ping when done.
+- **`event_loop_tracker`**: Callback that writes event-loop milestones (init, start, message, result, force_stop) to DynamoDB along with `agent_id` and stops the ping when done.
 
 ## Tests
 

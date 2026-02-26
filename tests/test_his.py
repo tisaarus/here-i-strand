@@ -30,6 +30,7 @@ class TestEventLoopTracker:
             status_dynamo_table_name="TestTable",
             session_id="sess-123",
             agent_name="TestAgent",
+            agent_id="TestAgentId",
         )
 
         mock_client.update_item.assert_called_once()
@@ -38,6 +39,7 @@ class TestEventLoopTracker:
         assert call_kw["Key"] == {"session_id": {"S": "sess-123"}}
         assert "evt_init_event_loop" in call_kw["UpdateExpression"]
         assert call_kw["ExpressionAttributeValues"][":name"]["S"] == "TestAgent"
+        assert call_kw["ExpressionAttributeValues"][":ai"]["S"] == "TestAgentId"
         assert not stop_event.is_set()
 
     @patch("his.his.boto3")
@@ -51,10 +53,12 @@ class TestEventLoopTracker:
             start_event_loop=True,
             status_dynamo_table_name="MyTable",
             session_id="s1",
+            agent_id="agent-456",
         )
 
         call_kw = mock_client.update_item.call_args[1]
         assert "evt_start_event_loop" in call_kw["UpdateExpression"]
+        assert call_kw["ExpressionAttributeValues"][":ai"]["S"] == "agent-456"
         assert not stop_event.is_set()
 
     @patch("his.his.boto3")
@@ -121,6 +125,24 @@ class TestEventLoopTracker:
         assert call_kw["TableName"] == "AgentCoreAgentStatus"
         assert call_kw["Key"] == {"session_id": {"S": "default"}}
         assert call_kw["ExpressionAttributeValues"][":name"]["S"] == "default"
+        assert call_kw["ExpressionAttributeValues"][":ai"]["S"] == "default"
+
+    @patch("his.his.boto3")
+    def test_agent_id_defaults_to_default_when_not_provided(self, mock_boto3):
+        mock_client = MagicMock()
+        mock_boto3.client.return_value = mock_client
+        stop_event = threading.Event()
+
+        event_loop_tracker(
+            stop_ping_event=stop_event,
+            init_event_loop=True,
+            status_dynamo_table_name="TestTable",
+            session_id="sess-123",
+            agent_name="TestAgent",
+        )
+
+        call_kw = mock_client.update_item.call_args[1]
+        assert call_kw["ExpressionAttributeValues"][":ai"]["S"] == "default"
 
 
 class TestPingStatusTask:
@@ -249,3 +271,23 @@ class TestHISAgent:
         assert agent.name == "TestAgent"
         # Daemon thread was started (ping_status_task is the target)
         assert threading.active_count() >= 1
+
+    @patch("his.his.ping_status_task")
+    @patch("his.his.boto3")
+    @patch("his.his.S3SessionManager")
+    def test_constructs_with_agent_id(
+            self, mock_s3_manager, mock_boto3, mock_ping_task
+    ):
+        mock_s3_manager.return_value = MagicMock()
+        mock_boto3.client.return_value = MagicMock()
+
+        agent = HISAgent(
+            bucket_name="my-bucket",
+            status_dynamo_table_name="StatusTable",
+            session_id="sess-1",
+            name="TestAgent",
+            agent_id="agent-unique-123",
+        )
+
+        assert agent.agent_id == "agent-unique-123"
+        assert agent.name == "TestAgent"

@@ -61,7 +61,7 @@ def ping_status_task(status_dynamo_table_name: str, session_id: str, stop_event:
                 logger.info(f" PING Ending - Session {session_id} ")
             except Exception as e:
                 logger.error(f"Error pinging localhost:8080/ping: {e}")
-                
+
             time.sleep(20)
         logger.info(f" PING Stopped - Session {session_id} ")
         client = boto3.client('dynamodb', region_name='eu-central-1')
@@ -107,8 +107,9 @@ def event_loop_tracker(**kwargs):
             Key={
                 'session_id': {'S': kwargs.get("session_id", "default")}
             },
-            UpdateExpression=f"SET evt_{field_to_update} = :val,  evt_last_updated = :time, evt_agent_name = :name",
+            UpdateExpression=f"SET agent_id = :ai, evt_{field_to_update} = :val,  evt_last_updated = :time, evt_agent_name = :name",
             ExpressionAttributeValues={
+                ':ai': {'S': kwargs.get("agent_id", "default")},
                 ':val': {'BOOL': True},
                 ':time': {'S': str(datetime.now())},
                 ':name': {'S': kwargs.get("agent_name", "default")}
@@ -165,7 +166,8 @@ class HISAgent(Agent):
                 status_dynamo_table_name=status_dynamo_table_name,
                 bucket_name=bucket_name,
                 session_id=session_id,
-                agent_name=name
+                agent_name=name,
+                agent_id=agent_id
             ),
             conversation_manager=conversation_manager,
             record_direct_tool_call=record_direct_tool_call,
@@ -198,17 +200,17 @@ class TimeoutConcurrentToolExecutor(ConcurrentToolExecutor):
         self.timeout_seconds = timeout_seconds
 
     async def _run_tool_stream(
-        self,
-        agent: "Agent",
-        tool_use: ToolUse,
-        tool_results: list[ToolResult],
-        cycle_trace: Any,
-        cycle_span: Any,
-        invocation_state: dict[str, Any],
-        task_id: int,
-        task_queue: asyncio.Queue,
-        task_event: asyncio.Event,
-        structured_output_context: "StructuredOutputContext | None",
+            self,
+            agent: "Agent",
+            tool_use: ToolUse,
+            tool_results: list[ToolResult],
+            cycle_trace: Any,
+            cycle_span: Any,
+            invocation_state: dict[str, Any],
+            task_id: int,
+            task_queue: asyncio.Queue,
+            task_event: asyncio.Event,
+            structured_output_context: "StructuredOutputContext | None",
     ) -> None:
         """Consume the tool stream and enqueue events so the caller can wrap with asyncio.wait_for."""
         events = ToolExecutor._stream_with_trace(
@@ -226,18 +228,18 @@ class TimeoutConcurrentToolExecutor(ConcurrentToolExecutor):
             task_event.clear()
 
     async def _task(
-        self,
-        agent: "Agent",
-        tool_use: ToolUse,
-        tool_results: list[ToolResult],
-        cycle_trace: Any,
-        cycle_span: Any,
-        invocation_state: dict[str, Any],
-        task_id: int,
-        task_queue: asyncio.Queue,
-        task_event: asyncio.Event,
-        stop_event: object,
-        structured_output_context: "StructuredOutputContext | None",
+            self,
+            agent: "Agent",
+            tool_use: ToolUse,
+            tool_results: list[ToolResult],
+            cycle_trace: Any,
+            cycle_span: Any,
+            invocation_state: dict[str, Any],
+            task_id: int,
+            task_queue: asyncio.Queue,
+            task_event: asyncio.Event,
+            stop_event: object,
+            structured_output_context: "StructuredOutputContext | None",
     ) -> None:
         """Run a single tool with timeout; on timeout, append an error result and continue."""
         tool_use_id = str(tool_use.get("toolUseId", ""))
