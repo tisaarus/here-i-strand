@@ -1,5 +1,6 @@
 """
-Unit tests for his.his: event_loop_tracker, ping_status_task, HISAgent, TimeoutConcurrentToolExecutor.
+Unit tests for his.his: event_loop_tracker, ping_status_task, HISAgent,
+TimeoutConcurrentToolExecutor, and write_dynamo.
 """
 import asyncio
 import threading
@@ -8,10 +9,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from his.his import (
+    DEFAULT_DYNAMODB_REPORTING_PROMPT_TEMPLATE,
     HISAgent,
     TimeoutConcurrentToolExecutor,
     event_loop_tracker,
     ping_status_task,
+    write_dynamo,
 )
 
 
@@ -33,13 +36,14 @@ class TestEventLoopTracker:
             agent_id="TestAgentId",
         )
 
-        mock_client.update_item.assert_called_once()
-        call_kw = mock_client.update_item.call_args[1]
+        mock_client.put_item.assert_called_once()
+        call_kw = mock_client.put_item.call_args[1]
         assert call_kw["TableName"] == "TestTable"
-        assert call_kw["Key"] == {"session_id": {"S": "sess-123"}}
-        assert "evt_init_event_loop" in call_kw["UpdateExpression"]
-        assert call_kw["ExpressionAttributeValues"][":name"]["S"] == "TestAgent"
-        assert call_kw["ExpressionAttributeValues"][":ai"]["S"] == "TestAgentId"
+        assert call_kw["Item"]["session_id"]["S"] == "sess-123"
+        assert "event_id" in call_kw["Item"]
+        assert call_kw["Item"]["agent_id"]["S"] == "TestAgentId"
+        assert call_kw["Item"]["evt_type"]["S"] == "EVENT_LOOP"
+        assert call_kw["Item"]["evt_message"]["S"] == "init_event_loop"
         assert not stop_event.is_set()
 
     @patch("his.his.boto3")
@@ -56,9 +60,9 @@ class TestEventLoopTracker:
             agent_id="agent-456",
         )
 
-        call_kw = mock_client.update_item.call_args[1]
-        assert "evt_start_event_loop" in call_kw["UpdateExpression"]
-        assert call_kw["ExpressionAttributeValues"][":ai"]["S"] == "agent-456"
+        call_kw = mock_client.put_item.call_args[1]
+        assert call_kw["Item"]["evt_message"]["S"] == "start_event_loop"
+        assert call_kw["Item"]["agent_id"]["S"] == "agent-456"
         assert not stop_event.is_set()
 
     @patch("his.his.boto3")
@@ -73,8 +77,8 @@ class TestEventLoopTracker:
             session_id="s2",
         )
 
-        call_kw = mock_client.update_item.call_args[1]
-        assert "evt_message" in call_kw["UpdateExpression"]
+        call_kw = mock_client.put_item.call_args[1]
+        assert call_kw["Item"]["evt_message"]["S"] == "message"
         assert not stop_event.is_set()
 
     @patch("his.his.boto3")
@@ -91,8 +95,8 @@ class TestEventLoopTracker:
         )
 
         assert stop_event.is_set()
-        call_kw = mock_client.update_item.call_args[1]
-        assert "evt_result" in call_kw["UpdateExpression"]
+        call_kw = mock_client.put_item.call_args[1]
+        assert call_kw["Item"]["evt_message"]["S"] == "result"
 
     @patch("his.his.boto3")
     def test_force_stop_sets_stop_ping_event_and_field(self, mock_boto3):
@@ -107,8 +111,8 @@ class TestEventLoopTracker:
         )
 
         assert stop_event.is_set()
-        call_kw = mock_client.update_item.call_args[1]
-        assert "evt_force_stop" in call_kw["UpdateExpression"]
+        call_kw = mock_client.put_item.call_args[1]
+        assert call_kw["Item"]["evt_message"]["S"] == "force_stop"
 
     @patch("his.his.boto3")
     def test_default_table_and_session_when_missing(self, mock_boto3):
@@ -121,11 +125,10 @@ class TestEventLoopTracker:
             init_event_loop=True,
         )
 
-        call_kw = mock_client.update_item.call_args[1]
+        call_kw = mock_client.put_item.call_args[1]
         assert call_kw["TableName"] == "AgentCoreAgentStatus"
-        assert call_kw["Key"] == {"session_id": {"S": "default"}}
-        assert call_kw["ExpressionAttributeValues"][":name"]["S"] == "default"
-        assert call_kw["ExpressionAttributeValues"][":ai"]["S"] == "default"
+        assert call_kw["Item"]["session_id"]["S"] == "default"
+        assert call_kw["Item"]["agent_id"]["S"] == "default"
 
     @patch("his.his.boto3")
     def test_agent_id_defaults_to_default_when_not_provided(self, mock_boto3):
@@ -141,8 +144,8 @@ class TestEventLoopTracker:
             agent_name="TestAgent",
         )
 
-        call_kw = mock_client.update_item.call_args[1]
-        assert call_kw["ExpressionAttributeValues"][":ai"]["S"] == "default"
+        call_kw = mock_client.put_item.call_args[1]
+        assert call_kw["Item"]["agent_id"]["S"] == "default"
 
 
 class TestPingStatusTask:
@@ -150,7 +153,7 @@ class TestPingStatusTask:
 
     @patch("his.his.time.sleep")
     @patch("his.his.boto3")
-    def test_updates_dynamodb_running_then_ended_when_stop_set_after_first_sleep(
+    def test_updates_dynamodb_running_then_finished_when_stop_set_after_first_sleep(
             self, mock_boto3, mock_sleep
     ):
         mock_client = MagicMock()
@@ -162,29 +165,35 @@ class TestPingStatusTask:
 
         mock_sleep.side_effect = stop_after_first_sleep
 
-        ping_status_task("StatusTable", "session-xyz", stop_event)
+        ping_status_task("StatusTable", "session-xyz", "agent-123", stop_event)
 
-        assert mock_client.update_item.call_count >= 2
-        calls = mock_client.update_item.call_args_list
-        first_vals = calls[0][1]["ExpressionAttributeValues"]
-        assert first_vals[":status"]["S"] == "running"
-        last_vals = calls[-1][1]["ExpressionAttributeValues"]
-        assert last_vals[":status"]["S"] == "ended"
+        assert mock_client.put_item.call_count >= 2
+        calls = mock_client.put_item.call_args_list
+        first_item = calls[0][1]["Item"]
+        assert first_item["evt_message"]["S"] == "running"
+        assert first_item["agent_id"]["S"] == "agent-123"
+        assert "event_id" in first_item
+        last_item = calls[-1][1]["Item"]
+        assert last_item["evt_message"]["S"] == "finished"
+        assert "event_id" in last_item
+        assert first_item["event_id"]["S"] != last_item["event_id"]["S"]
 
     @patch("his.his.time.sleep")
     @patch("his.his.boto3")
-    def test_ended_update_uses_correct_table_and_key(self, mock_boto3, mock_sleep):
+    def test_finished_update_uses_correct_table_and_key(self, mock_boto3, mock_sleep):
         mock_client = MagicMock()
         mock_boto3.client.return_value = mock_client
         stop_event = threading.Event()
         mock_sleep.side_effect = lambda *a, **k: stop_event.set()
 
-        ping_status_task("MyStatusTable", "my-session-id", stop_event)
+        ping_status_task("MyStatusTable", "my-session-id", "my-agent-id", stop_event)
 
-        last_call_kw = mock_client.update_item.call_args_list[-1][1]
+        last_call_kw = mock_client.put_item.call_args_list[-1][1]
         assert last_call_kw["TableName"] == "MyStatusTable"
-        assert last_call_kw["Key"] == {"session_id": {"S": "my-session-id"}}
-        assert last_call_kw["ExpressionAttributeValues"][":status"]["S"] == "ended"
+        assert last_call_kw["Item"]["session_id"]["S"] == "my-session-id"
+        assert last_call_kw["Item"]["agent_id"]["S"] == "my-agent-id"
+        assert last_call_kw["Item"]["evt_message"]["S"] == "finished"
+        assert "event_id" in last_call_kw["Item"]
 
 
 class TestTimeoutConcurrentToolExecutor:
@@ -265,11 +274,9 @@ class TestHISAgent:
         mock_s3_manager.assert_called_once_with(
             session_id="sess-1",
             bucket="my-bucket",
-            region_name="eu-central-1",
             prefix="ac-sessions/TestAgent",
         )
         assert agent.name == "TestAgent"
-        # Daemon thread was started (ping_status_task is the target)
         assert threading.active_count() >= 1
 
     @patch("his.his.ping_status_task")
@@ -291,3 +298,128 @@ class TestHISAgent:
 
         assert agent.agent_id == "agent-unique-123"
         assert agent.name == "TestAgent"
+
+
+class TestWriteDynamo:
+    """Tests for write_dynamo tool."""
+
+    @patch("his.his.boto3")
+    def test_writes_event_to_dynamodb(self, mock_boto3):
+        mock_client = MagicMock()
+        mock_boto3.client.return_value = mock_client
+
+        write_dynamo(
+            table_name="events-table",
+            agent_id="agent-123",
+            session_id="sess-456",
+            event_type="STATUS",
+            message="Processing started",
+        )
+
+        mock_client.put_item.assert_called_once()
+        call_kw = mock_client.put_item.call_args[1]
+        assert call_kw["TableName"] == "events-table"
+        assert call_kw["Item"]["session_id"]["S"] == "sess-456"
+        assert "event_id" in call_kw["Item"]
+        assert call_kw["Item"]["agent_id"]["S"] == "agent-123"
+        assert call_kw["Item"]["evt_type"]["S"] == "STATUS"
+        assert call_kw["Item"]["evt_message"]["M"]["event_loop"]["S"] == "Processing started"
+
+    @patch("his.his.boto3")
+    @patch("his.his.logger")
+    def test_logs_error_on_dynamodb_failure(self, mock_logger, mock_boto3):
+        mock_client = MagicMock()
+        mock_client.put_item.side_effect = Exception("DynamoDB error")
+        mock_boto3.client.return_value = mock_client
+
+        write_dynamo(
+            table_name="events-table",
+            agent_id="agent-123",
+            session_id="sess-456",
+            event_type="STATUS",
+            message="Test message",
+        )
+
+        mock_logger.error.assert_called_once()
+        assert "sess-456" in mock_logger.error.call_args[0][0]
+
+
+class TestBuildSystemPrompt:
+    """Tests for HISAgent._build_system_prompt method."""
+
+    def test_returns_default_prompt_when_user_prompt_is_none(self):
+        result = HISAgent._build_system_prompt(
+            None, "test-table", "sess-123", "agent-456"
+        )
+        assert isinstance(result, str)
+        assert "test-table" in result
+        assert "sess-123" in result
+        assert "agent-456" in result
+
+    def test_combines_with_string_user_prompt(self):
+        user_prompt = "You are a helpful assistant."
+        result = HISAgent._build_system_prompt(
+            user_prompt, "test-table", "sess-123", "agent-456"
+        )
+
+        assert isinstance(result, str)
+        assert "test-table" in result
+        assert "sess-123" in result
+        assert "agent-456" in result
+        assert user_prompt in result
+
+    def test_combines_with_list_user_prompt(self):
+        user_prompt = [{"text": "You are a helpful assistant."}]
+        result = HISAgent._build_system_prompt(
+            user_prompt, "test-table", "sess-123", "agent-456"
+        )
+
+        assert isinstance(result, list)
+        assert len(result) == 2
+        assert "test-table" in result[0]["text"]
+        assert "sess-123" in result[0]["text"]
+        assert "agent-456" in result[0]["text"]
+        assert result[1]["text"] == "You are a helpful assistant."
+
+    def test_preserves_multiple_content_blocks(self):
+        user_prompt = [
+            {"text": "First instruction."},
+            {"text": "Second instruction."},
+        ]
+        result = HISAgent._build_system_prompt(
+            user_prompt, "test-table", "sess-123", "agent-456"
+        )
+
+        assert isinstance(result, list)
+        assert len(result) == 3
+        assert "test-table" in result[0]["text"]
+
+
+class TestBuildTools:
+    """Tests for HISAgent._build_tools method."""
+
+    def test_returns_write_dynamo_when_tools_is_none(self):
+        result = HISAgent._build_tools(None)
+        assert len(result) == 1
+        assert result[0] is write_dynamo
+
+    def test_appends_write_dynamo_to_tools_list(self):
+        user_tools = ["tool1", "tool2"]
+        result = HISAgent._build_tools(user_tools)
+
+        assert len(result) == 3
+        assert result[0] == "tool1"
+        assert result[1] == "tool2"
+        assert result[2] is write_dynamo
+
+    def test_handles_empty_tools_list(self):
+        result = HISAgent._build_tools([])
+        assert len(result) == 1
+        assert result[0] is write_dynamo
+
+    def test_does_not_modify_original_list(self):
+        user_tools = ["tool1", "tool2"]
+        original_length = len(user_tools)
+        HISAgent._build_tools(user_tools)
+
+        assert len(user_tools) == original_length
