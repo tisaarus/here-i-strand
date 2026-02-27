@@ -87,12 +87,8 @@ def write_dynamo(
                 'event_id': {'S': str(uuid.uuid4())},
                 'agent_id': {'S': agent_id},
                 'evt_type': {'S': event_type},
-                'evt_datetime': {'S': str(datetime.now())},
-                'evt_message': {
-                    'M': {
-                        'event_loop': {'S': message},
-                    }
-                }
+                'evt_message': {'S': message},
+                'evt_datetime': {'S': str(datetime.now())}
             })
     except Exception as e:
         logger.error(f"Error writing to DynamoDB for session {session_id}: {e}")
@@ -121,8 +117,8 @@ def ping_status_task(status_dynamo_table_name: str, session_id: str, agent_id: s
                     'event_id': {'S': str(uuid.uuid4())},
                     'agent_id': {'S': agent_id},
                     'evt_type': {'S': 'PING'},
-                    'evt_datetime': {'S': str(datetime.now())},
-                    'evt_message': {'S': 'running'}
+                    'evt_message': {'S': 'running'},
+                    'evt_datetime': {'S': str(datetime.now())}
                 })
                 logger.info(f"PING Completed - Session {session_id}")
             except Exception as e:
@@ -136,8 +132,8 @@ def ping_status_task(status_dynamo_table_name: str, session_id: str, agent_id: s
             'event_id': {'S': str(uuid.uuid4())},
             'agent_id': {'S': agent_id},
             'evt_type': {'S': 'PING'},
-            'evt_datetime': {'S': str(datetime.now())},
-            'evt_message': {'S': 'finished'}
+            'evt_message': {'S': 'finished'},
+            'evt_datetime': {'S': str(datetime.now())}
         })
     except Exception as e:
         logger.error(f"Error in ping_status_task for session {session_id}: {e}")
@@ -167,10 +163,6 @@ def event_loop_tracker(**kwargs):
     field_to_update = None
     if kwargs.get("init_event_loop"):
         field_to_update = "init_event_loop"
-    elif kwargs.get("start_event_loop"):
-        field_to_update = "start_event_loop"
-    elif "message" in kwargs:
-        field_to_update = "message"
     elif "result" in kwargs:
         field_to_update = "result"
         stop_ping_event.set()
@@ -187,8 +179,8 @@ def event_loop_tracker(**kwargs):
                 'event_id': {'S': str(uuid.uuid4())},
                 'agent_id': {'S': kwargs.get("agent_id", "default")},
                 'evt_type': {'S': 'EVENT_LOOP'},
-                'evt_datetime': {'S': str(datetime.now())},
-                'evt_message': {'S': field_to_update}
+                'evt_message': {'S': field_to_update},
+                'evt_datetime': {'S': str(datetime.now())}
             })
 
 

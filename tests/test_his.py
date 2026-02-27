@@ -47,41 +47,6 @@ class TestEventLoopTracker:
         assert not stop_event.is_set()
 
     @patch("his.his.boto3")
-    def test_sets_start_event_loop_field(self, mock_boto3):
-        mock_client = MagicMock()
-        mock_boto3.client.return_value = mock_client
-        stop_event = threading.Event()
-
-        event_loop_tracker(
-            stop_ping_event=stop_event,
-            start_event_loop=True,
-            status_dynamo_table_name="MyTable",
-            session_id="s1",
-            agent_id="agent-456",
-        )
-
-        call_kw = mock_client.put_item.call_args[1]
-        assert call_kw["Item"]["evt_message"]["S"] == "start_event_loop"
-        assert call_kw["Item"]["agent_id"]["S"] == "agent-456"
-        assert not stop_event.is_set()
-
-    @patch("his.his.boto3")
-    def test_sets_message_field(self, mock_boto3):
-        mock_client = MagicMock()
-        mock_boto3.client.return_value = mock_client
-        stop_event = threading.Event()
-
-        event_loop_tracker(
-            stop_ping_event=stop_event,
-            message={},
-            session_id="s2",
-        )
-
-        call_kw = mock_client.put_item.call_args[1]
-        assert call_kw["Item"]["evt_message"]["S"] == "message"
-        assert not stop_event.is_set()
-
-    @patch("his.his.boto3")
     def test_result_sets_stop_ping_event_and_field(self, mock_boto3):
         mock_client = MagicMock()
         mock_boto3.client.return_value = mock_client
@@ -323,7 +288,7 @@ class TestWriteDynamo:
         assert "event_id" in call_kw["Item"]
         assert call_kw["Item"]["agent_id"]["S"] == "agent-123"
         assert call_kw["Item"]["evt_type"]["S"] == "STATUS"
-        assert call_kw["Item"]["evt_message"]["M"]["event_loop"]["S"] == "Processing started"
+        assert call_kw["Item"]["evt_message"]["S"] == "Processing started"
 
     @patch("his.his.boto3")
     @patch("his.his.logger")
