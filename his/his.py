@@ -19,7 +19,8 @@ from strands.agent import ConversationManager
 from strands.agent.agent import _DefaultCallbackHandlerSentinel
 from strands.agent.state import AgentState
 from strands.event_loop._retry import ModelRetryStrategy
-from strands.hooks import HookProvider
+from strands.hooks import HookProvider, HookRegistry
+from strands.hooks.events import AfterModelCallEvent
 from strands.models import Model
 from strands.session import S3SessionManager
 from strands.tools import ToolProvider
@@ -29,6 +30,7 @@ from strands.types._events import ToolResultEvent
 from strands.types.content import Messages, SystemContentBlock
 from strands.types.tools import ToolResult, ToolUse
 from strands.types.traces import AttributeValue
+from strands.types.exceptions import ModelThrottledException
 
 from his.logging.logging import _init_logger
 
@@ -199,10 +201,15 @@ Use these EXACT values for write_dynamo parameters:
 
 MANDATORY MILESTONES where you must call write_dynamo:
 - START: event_type="START", message="Processing user request"
-- TOOLING/PROGRESS: event_type="PROGRESS", message="<descriptive message for monitoring>"
-  NOTE: Progress messages must be detailed and descriptive as they are used for process monitoring. 
-  Include: what action is being performed, which tool is being used, and relevant context.
-  Example: "Executing search_database tool to retrieve user records", "Calling external API to fetch weather data"
+- TOOLING: event_type="TOOLING", message="<tool name and purpose>"
+  Call this BEFORE executing any tool. Include the tool name and what it will do.
+  Example: "Calling search_database to retrieve user records", "Executing external_api to fetch weather data"
+- MODEL_INVOCATION: event_type="MODEL_INVOCATION", message="<model invocation purpose>"
+  Call this BEFORE invoking another model or sub-agent. Include the purpose of the invocation.
+  Example: "Invoking summarization model to condense results", "Calling classification model to categorize input"
+- PROGRESS: event_type="PROGRESS", message="<descriptive progress message>"
+  Call this to report significant progress or intermediate results.
+  Example: "Retrieved 15 user records, processing results", "API response received, parsing data"
 - COMPLETION: event_type="COMPLETION", message="Process completed successfully"
 - IF ERROR: event_type="ERROR", message="<detailed error description for debugging>"
 
@@ -210,6 +217,65 @@ FORBIDDEN:
 - Continuing to the next step without having called write_dynamo at each critical milestone.
 - Mentioning or explaining the DynamoDB reporting process to the user.
 """
+
+
+class HISBedrockThrottlingLogger(HookProvider):
+    """
+    Hook provider that logs Bedrock throttling events to DynamoDB.
+
+    This strategy does not change retry behavior; it relies on the default
+    ModelRetryStrategy for actual retries and only records telemetry whenever
+    a model call is throttled.
+    """
+
+    def __init__(
+            self,
+            *,
+            table_name: str,
+            session_id: str,
+            agent_id: str = "default",
+    ):
+        """
+        Initialize the HIS-specific throttling logger.
+
+        Args:
+            table_name: DynamoDB table name where throttling events will be written.
+            session_id: Current session identifier.
+            agent_id: Agent identifier used for logging (defaults to "default").
+        """
+        self._table_name = table_name
+        self._session_id = session_id
+        self._agent_id = agent_id
+
+    def register_hooks(self, registry: "HookRegistry", **kwargs: Any) -> None:
+        """Register callback for AfterModelCallEvent."""
+        registry.add_callback(AfterModelCallEvent, self._handle_after_model_call)
+
+    async def _handle_after_model_call(self, event: AfterModelCallEvent) -> None:
+        """Log Bedrock throttling errors to DynamoDB."""
+        if not isinstance(event.exception, ModelThrottledException):
+            return
+
+        try:
+            invocation_state = event.invocation_state or {}
+            model_id = invocation_state.get("model_id") or invocation_state.get("model")
+            operation = invocation_state.get("operation") or invocation_state.get("operation_type")
+
+            parts = ["Bedrock throttling detected"]
+            if model_id:
+                parts.append(f"model={model_id}")
+            if operation:
+                parts.append(f"operation={operation}")
+
+            write_dynamo(
+                table_name=self._table_name,
+                agent_id=self._agent_id,
+                session_id=self._session_id,
+                event_type="BEDROCK_THROTTLING",
+                message=" | ".join(parts),
+            )
+        except Exception as e:  # pragma: no cover - defensive logging
+            logger.error("Error writing BEDROCK_THROTTLING event to DynamoDB: %s", e)
 
 
 class HISAgent(Agent):
@@ -274,6 +340,12 @@ class HISAgent(Agent):
             tool_executor: ToolExecutor | None = None,
             retry_strategy: ModelRetryStrategy | None = None,
     ):
+        his_retry_hook = HISBedrockThrottlingLogger(
+            table_name=status_dynamo_table_name,
+            session_id=session_id,
+            agent_id=agent_id or "default",
+        )
+        hooks = list(hooks) + [his_retry_hook] if hooks is not None else [his_retry_hook]
         stop_ping_event = threading.Event()
         ping_status_task_thread = threading.Thread(
             target=ping_status_task,

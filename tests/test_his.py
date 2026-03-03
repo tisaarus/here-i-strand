@@ -11,6 +11,7 @@ import pytest
 from his.his import (
     DEFAULT_DYNAMODB_REPORTING_PROMPT_TEMPLATE,
     HISAgent,
+    HISBedrockThrottlingLogger,
     TimeoutConcurrentToolExecutor,
     event_loop_tracker,
     ping_status_task,
@@ -309,6 +310,59 @@ class TestWriteDynamo:
         assert "sess-456" in mock_logger.error.call_args[0][0]
 
 
+class TestHISBedrockThrottlingLogger:
+    """Tests for HISBedrockThrottlingLogger."""
+
+    @pytest.mark.asyncio
+    async def test_logs_bedrock_throttling_on_retry(self, monkeypatch):
+        from strands.hooks.events import AfterModelCallEvent
+        from strands.types.exceptions import ModelThrottledException
+
+        # Arrange: create strategy and event with throttling exception
+        strategy = HISBedrockThrottlingLogger(
+            table_name="StatusTable",
+            session_id="sess-1",
+            agent_id="agent-123",
+        )
+
+        event = AfterModelCallEvent(
+            agent=MagicMock(),
+            invocation_state={"model_id": "bedrock-model", "operation": "invoke"},
+            stop_response=None,
+            exception=ModelThrottledException("throttled"),
+            retry=False,
+        )
+
+        # Patch write_dynamo to capture calls
+        calls: list[dict] = []
+
+        def fake_write_dynamo(table_name, agent_id, session_id, event_type, message):
+            calls.append(
+                {
+                    "table_name": table_name,
+                    "agent_id": agent_id,
+                    "session_id": session_id,
+                    "event_type": event_type,
+                    "message": message,
+                }
+            )
+
+        monkeypatch.setattr("his.his.write_dynamo", fake_write_dynamo)
+
+        # Act
+        await strategy._handle_after_model_call(event)
+
+        # Assert: DynamoDB throttling event was written
+        assert len(calls) == 1
+        call = calls[0]
+        assert call["table_name"] == "StatusTable"
+        assert call["session_id"] == "sess-1"
+        assert call["agent_id"] == "agent-123"
+        assert call["event_type"] == "BEDROCK_THROTTLING"
+        assert "Bedrock throttling detected" in call["message"]
+        assert "bedrock-model" in call["message"]
+        assert "operation=invoke" in call["message"]
+
 class TestBuildSystemPrompt:
     """Tests for HISAgent._build_system_prompt method."""
 
@@ -320,6 +374,13 @@ class TestBuildSystemPrompt:
         assert "test-table" in result
         assert "sess-123" in result
         assert "agent-456" in result
+        # Ensure key DynamoDB reporting event types are present in the default template
+        assert "START" in result
+        assert "TOOLING" in result
+        assert "MODEL_INVOCATION" in result
+        assert "PROGRESS" in result
+        assert "COMPLETION" in result
+        assert "ERROR" in result
 
     def test_combines_with_string_user_prompt(self):
         user_prompt = "You are a helpful assistant."

@@ -61,18 +61,43 @@ here-i-strand/
 
 - **`HISAgent`**: Strands agent with a DynamoDB ping thread and S3 sessions. You pass `status_dynamo_table_name`, `bucket_name`, `session_id`, and optionally `name` and `agent_id` so the ping and tracker use your table and bucket. Includes a default system prompt that enforces DynamoDB status reporting at key milestones. The `write_dynamo` tool is automatically added to the agent's tools.
 - **`TimeoutConcurrentToolExecutor`**: Tool executor with a per-invocation timeout (default: 300s); if a tool exceeds the limit, an error is returned and execution continues with the rest.
-- **`event_loop_tracker`**: Callback that writes event-loop milestones (init, start, message, result, force_stop) to DynamoDB along with `agent_id` and stops the ping when done.
-- **`write_dynamo`**: Strands tool for writing custom event records to DynamoDB for agent tracking and observability. Automatically included in `HISAgent`.
-- **`DEFAULT_DYNAMODB_REPORTING_PROMPT_TEMPLATE`**: Template for the default system prompt that instructs the agent to report status updates to DynamoDB at key milestones (start, tooling, completion, error). The template is populated with the actual `table_name`, `session_id`, and `agent_id` values when the agent is created.
+- **`event_loop_tracker`**: Callback that writes event-loop milestones (`init_event_loop`, `result`, `force_stop`) to DynamoDB along with session and agent identifiers, and stops the ping thread when the loop finishes.
+- **`write_dynamo`**: Strands tool for writing custom event records to DynamoDB for agent tracking and observability. Automatically included in `HISAgent`. Each call creates a new append-only event item identified by a composite key (`session_id`, `event_id`).
+- **`DEFAULT_DYNAMODB_REPORTING_PROMPT_TEMPLATE`**: Template for the default system prompt that instructs the agent to report status updates to DynamoDB at key milestones such as `START`, `TOOLING`, `MODEL_INVOCATION`, `PROGRESS`, `COMPLETION`, and `ERROR`. The template is populated with the actual `table_name`, `session_id`, and `agent_id` values when the agent is created and explicitly instructs the agent to keep this reporting completely invisible to the end user.
+- **`HISBedrockThrottlingLogger`**: Hook provider that listens for `ModelThrottledException` events and writes `BEDROCK_THROTTLING` records to DynamoDB for observability, independent of the system prompt.
 
 ## Default behavior
 
 When you create an `HISAgent`, the following happens automatically:
 
-1. **System prompt**: The `DEFAULT_DYNAMODB_REPORTING_PROMPT` is prepended to any custom system prompt you provide, instructing the agent to report status at key milestones.
+1. **System prompt**: The `DEFAULT_DYNAMODB_REPORTING_PROMPT_TEMPLATE` is formatted with your `status_dynamo_table_name`, `session_id`, and `agent_id` and prepended to any custom system prompt you provide. It instructs the agent to report status at key milestones (`START`, `TOOLING`, `MODEL_INVOCATION`, `PROGRESS`, `COMPLETION`, `ERROR`) while keeping this reporting hidden from the user.
 2. **Tools**: The `write_dynamo` tool is automatically added to your tools list, enabling the agent to write status updates to DynamoDB.
 3. **Ping thread**: A daemon thread starts that pings DynamoDB every 20 seconds with a "running" status until the agent completes.
 4. **Event tracking**: The `event_loop_tracker` callback records event-loop milestones to DynamoDB.
+
+## DynamoDB status events and schema
+
+The library expects a DynamoDB table where status and telemetry events are written in an append-only fashion:
+
+- **Partition key**: `session_id` (String)
+- **Sort key**: `event_id` (String, UUID generated per event)
+
+Each item also includes:
+
+- `agent_id`: Agent instance identifier
+- `evt_type`: Event type (e.g. `START`, `TOOLING`, `MODEL_INVOCATION`, `PROGRESS`, `BEDROCK_THROTTLING`, `COMPLETION`, `ERROR`, `PING`, `EVENT_LOOP`)
+- `evt_message`: Human-readable message describing the event
+- `evt_datetime`: ISO datetime of when the event was recorded
+
+Typical high-level event types written by the agent are:
+
+- `START`: Beginning of request processing.
+- `TOOLING`: Before executing any external tool (includes tool name and purpose).
+- `MODEL_INVOCATION`: Before invoking another model or sub-agent.
+- `PROGRESS`: Significant progress or intermediate result checkpoints.
+- `BEDROCK_THROTTLING`: Bedrock throttling errors (rate/concurrency limits), including retry context.
+- `COMPLETION`: Successful end of processing.
+- `ERROR`: Unexpected errors with details for debugging.
 
 ## Tests
 
