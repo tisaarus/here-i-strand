@@ -5,6 +5,8 @@ Provides a custom Strands agent with DynamoDB status tracking, S3 session persis
 and a concurrent tool executor with per-tool timeouts.
 """
 import asyncio
+import json
+import re
 import threading
 import time
 import uuid
@@ -15,7 +17,7 @@ from typing import Union, Callable, Any, Mapping
 import boto3
 from pydantic import BaseModel
 from strands import Agent, tool
-from strands.agent import ConversationManager
+from strands.agent import ConversationManager, AgentResult
 from strands.agent.agent import _DefaultCallbackHandlerSentinel
 from strands.agent.state import AgentState
 from strands.event_loop._retry import ModelRetryStrategy
@@ -51,7 +53,7 @@ def write_dynamo(
 
     This tool creates a new item in the specified DynamoDB table to record
     agent events such as status updates, milestones, or custom messages.
-    Each call creates a new timestamped record (append-only pattern) with a 
+    Each call creates a new timestamped record (append-only pattern) with a
     unique event_id (UUID).
 
     The DynamoDB table should have the following schema:
@@ -339,7 +341,13 @@ class HISAgent(Agent):
             hooks: list[HookProvider] | None = None,
             tool_executor: ToolExecutor | None = None,
             retry_strategy: ModelRetryStrategy | None = None,
+            user: Any | None = None,
     ):
+        self._his_status_dynamo_table_name = status_dynamo_table_name
+        self._his_session_id = session_id
+        self._his_agent_id = agent_id or "default"
+        self._his_user = user
+
         his_retry_hook = HISBedrockThrottlingLogger(
             table_name=status_dynamo_table_name,
             session_id=session_id,
@@ -393,6 +401,119 @@ class HISAgent(Agent):
             retry_strategy=retry_strategy,
         )
         ping_status_task_thread.start()
+
+    def __call__(self, *args: Any, **kwargs: Any) -> AgentResult:
+        response = super().__call__(*args, **kwargs)
+        self._log_stats(response)
+        self._log_result(response)
+
+        return response
+
+    def _log_stats(self, response) -> None:
+        try:
+            usage = response.metrics.accumulated_usage
+            stats = {
+                "total_tokens": usage.get("totalTokens", 0),
+                "input_tokens": usage.get("inputTokens", 0),
+                "output_tokens": usage.get("outputTokens", 0),
+                "cache_write_tokens": usage.get("cacheWriteInputTokens", 0),
+                "cache_read_tokens": usage.get("cacheReadInputTokens", 0),
+                "user": self._his_user,
+            }
+            write_dynamo(
+                table_name=self._his_status_dynamo_table_name,
+                agent_id=self._his_agent_id,
+                session_id=self._his_session_id,
+                event_type="AGENT_STATS",
+                message=json.dumps(stats),
+            )
+            logger.info(f"AGENT_STATS: {stats}")
+        except Exception as e:
+            logger.error("Failed to persist AGENT_STATS to DynamoDB: %s", e)
+
+    def _log_result(self, response) -> None:
+        """
+        Extract the final model result from the Agent response and persist it to DynamoDB.
+
+        The method is intentionally defensive:
+        - It tolerates missing or malformed response structures.
+        - It attempts to extract a JSON payload from the assistant text, but if parsing
+          fails it falls back to storing the raw text under the "raw" key.
+        """
+        try:
+            message = getattr(response, "message", {}) or {}
+            content_list = message.get("content") or []
+            if not isinstance(content_list, list) or not content_list:
+                return
+
+            raw_text = ""
+            for block in content_list:
+                text_value = (block or {}).get("text")
+                if isinstance(text_value, str) and text_value.strip():
+                    raw_text = text_value.strip()
+                    break
+
+            if not raw_text:
+                return
+
+            payload = self._extract_json(raw_text)
+
+            logger.info(f"RESULT: {payload}")
+
+            write_dynamo(
+                table_name=self._his_status_dynamo_table_name,
+                agent_id=self._his_agent_id,
+                session_id=self._his_session_id,
+                event_type="RESULT",
+                message=json.dumps(payload),
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to persist RESULT to DynamoDB: {e}", exc_info=True)
+
+    @staticmethod
+    def _extract_json(text: str) -> dict:
+        """
+        Best-effort JSON extraction from model output text.
+
+        This helper tries several strategies:
+        1. Parse the whole string as JSON.
+        2. Strip Markdown code fences (``` or ```json) and parse again.
+        3. Use a regex to find the first JSON object/array and parse it.
+        4. As a last resort, use JSONDecoder.raw_decode starting from the first '{'.
+
+        If all attempts fail, it returns a wrapper: {"raw": <original_text>}.
+        """
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            pass
+
+        fenced_match = re.search(r"```(?:json)?\s*(.+?)```", text, re.DOTALL | re.IGNORECASE)
+        candidate = fenced_match.group(1).strip() if fenced_match else text
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            pass
+
+        match = re.search(r"(\{.*\}|\[.*\])", text, re.DOTALL)
+        if match:
+            snippet = match.group(1)
+            try:
+                return json.loads(snippet)
+            except json.JSONDecodeError:
+                pass
+
+        try:
+            start_index = text.find("{")
+            if start_index != -1:
+                decoder = json.JSONDecoder()
+                payload, _ = decoder.raw_decode(text[start_index:])
+                return payload
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+        return {"raw": text}
 
     @staticmethod
     def _build_tools(

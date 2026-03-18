@@ -310,6 +310,29 @@ class TestWriteDynamo:
         assert "sess-456" in mock_logger.error.call_args[0][0]
 
 
+class TestLogResultAndExtractJson:
+    """Tests for HISAgent._log_result and HISAgent._extract_json."""
+
+    def test_extract_json_direct(self):
+        text = '{"foo": "bar", "value": 1}'
+        result = HISAgent._extract_json(text)
+        assert result == {"foo": "bar", "value": 1}
+
+    def test_extract_json_from_markdown_fence(self):
+        text = "Here is the result:\n```json\n{\"foo\": \"bar\"}\n```"
+        result = HISAgent._extract_json(text)
+        assert result == {"foo": "bar"}
+
+    def test_extract_json_from_embedded_object(self):
+        text = "Some text before {\"foo\": \"bar\", \"n\": 2} and after."
+        result = HISAgent._extract_json(text)
+        assert result == {"foo": "bar", "n": 2}
+
+    def test_extract_json_falls_back_to_raw(self):
+        text = "this is not json"
+        result = HISAgent._extract_json(text)
+        assert result == {"raw": text}
+
 class TestHISBedrockThrottlingLogger:
     """Tests for HISBedrockThrottlingLogger."""
 

@@ -85,8 +85,8 @@ The library expects a DynamoDB table where status and telemetry events are writt
 Each item also includes:
 
 - `agent_id`: Agent instance identifier
-- `evt_type`: Event type (e.g. `START`, `TOOLING`, `MODEL_INVOCATION`, `PROGRESS`, `BEDROCK_THROTTLING`, `COMPLETION`, `ERROR`, `PING`, `EVENT_LOOP`)
-- `evt_message`: Human-readable message describing the event
+- `evt_type`: Event type (e.g. `START`, `TOOLING`, `MODEL_INVOCATION`, `PROGRESS`, `BEDROCK_THROTTLING`, `COMPLETION`, `ERROR`, `PING`, `EVENT_LOOP`, `AGENT_STATS`, `RESULT`)
+- `evt_message`: Human-readable message describing the event or a JSON-encoded payload
 - `evt_datetime`: ISO datetime of when the event was recorded
 
 Typical high-level event types written by the agent are:
@@ -96,6 +96,8 @@ Typical high-level event types written by the agent are:
 - `MODEL_INVOCATION`: Before invoking another model or sub-agent.
 - `PROGRESS`: Significant progress or intermediate result checkpoints.
 - `BEDROCK_THROTTLING`: Bedrock throttling errors (rate/concurrency limits), including retry context.
+- `AGENT_STATS`: Aggregated usage metrics for the invocation (tokens, cache usage, user).
+- `RESULT`: Final structured result of the agent run, stored as JSON when possible (falls back to a `{"raw": "<text>"}` wrapper when parsing fails).
 - `COMPLETION`: Successful end of processing.
 - `ERROR`: Unexpected errors with details for debugging.
 
