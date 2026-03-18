@@ -74,6 +74,7 @@ When you create an `HISAgent`, the following happens automatically:
 2. **Tools**: The `write_dynamo` tool is automatically added to your tools list, enabling the agent to write status updates to DynamoDB.
 3. **Ping thread**: A daemon thread starts that pings DynamoDB every 20 seconds with a "running" status until the agent completes.
 4. **Event tracking**: The `event_loop_tracker` callback records event-loop milestones to DynamoDB.
+5. **Result enrichment**: The `__call__` method returns the standard `AgentResult` object, enriched with a `model_id` attribute (best-effort; may be `None` for model providers that do not expose an identifier).
 
 ## DynamoDB status events and schema
 

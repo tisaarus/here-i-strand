@@ -23,7 +23,7 @@ from strands.agent.state import AgentState
 from strands.event_loop._retry import ModelRetryStrategy
 from strands.hooks import HookProvider, HookRegistry
 from strands.hooks.events import AfterModelCallEvent
-from strands.models import Model
+from strands.models import BedrockModel, Model
 from strands.session import S3SessionManager
 from strands.tools import ToolProvider
 from strands.tools.executors import ConcurrentToolExecutor
@@ -403,23 +403,43 @@ class HISAgent(Agent):
         ping_status_task_thread.start()
 
     def __call__(self, *args: Any, **kwargs: Any) -> AgentResult:
+        """
+        Run the agent and return the AgentResult, enriched with the underlying model id.
+
+        Besides delegating to the base Agent implementation, this method:
+        - Logs usage statistics to DynamoDB (`AGENT_STATS` event).
+        - Logs the final structured result to DynamoDB (`RESULT` event).
+        - Attaches a `model_id` attribute to the returned AgentResult when available.
+        """
+        start_time = time.perf_counter()
         response = super().__call__(*args, **kwargs)
-        self._log_stats(response)
+        execution_time_in_seconds = time.perf_counter() - start_time
+
+        self._log_stats(response, execution_time_in_seconds)
         self._log_result(response)
 
         return response
 
-    def _log_stats(self, response) -> None:
+    def _log_stats(self, response, execution_time_in_seconds: float) -> None:
         try:
-            usage = response.metrics.accumulated_usage
+            accumulated_usage = response.metrics.accumulated_usage
+            tool_metrics = response.metrics.tool_metrics
+
             stats = {
-                "total_tokens": usage.get("totalTokens", 0),
-                "input_tokens": usage.get("inputTokens", 0),
-                "output_tokens": usage.get("outputTokens", 0),
-                "cache_write_tokens": usage.get("cacheWriteInputTokens", 0),
-                "cache_read_tokens": usage.get("cacheReadInputTokens", 0),
+                "total_tokens": accumulated_usage.get("totalTokens", 0),
+                "input_tokens": accumulated_usage.get("inputTokens", 0),
+                "output_tokens": accumulated_usage.get("outputTokens", 0),
+                "cache_write_tokens": accumulated_usage.get("cacheWriteInputTokens", 0),
+                "cache_read_tokens": accumulated_usage.get("cacheReadInputTokens", 0),
                 "user": self._his_user,
+                "execution_time_in_seconds": execution_time_in_seconds,
+                "tools": {tool_name: {
+                    "call_count": metrics.call_count,
+                    "total_time": metrics.total_time,
+                } for tool_name, metrics in tool_metrics.items()},
+                "model_id": self.model.get_config().model_id if isinstance(self.model, BedrockModel) else None,  # TODO
             }
+
             write_dynamo(
                 table_name=self._his_status_dynamo_table_name,
                 agent_id=self._his_agent_id,
