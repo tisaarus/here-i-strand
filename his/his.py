@@ -319,9 +319,9 @@ class HISAgent(Agent):
 
     def __init__(
             self,
-            bucket_name: str,
             status_dynamo_table_name: str,
             session_id: str,
+            bucket_name: str | None = None,
             model: Model | str | None = None,
             messages: Messages | None = None,
             tools: list[Union[str, dict[str, str], "ToolProvider", Any]] | None = None,
@@ -396,7 +396,7 @@ class HISAgent(Agent):
                 session_id=session_id,
                 bucket=bucket_name,
                 prefix=f"ac-sessions/{name}"
-            ),
+            ) if bucket_name else None,
             tool_executor=tool_executor,
             retry_strategy=retry_strategy,
         )
