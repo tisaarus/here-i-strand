@@ -1,6 +1,6 @@
 [project]
 name = "here-i-strand"
-version = "0.2.7"
+version = "0.2.9"
 description = "here-i-strand (HIS) agent module. Provides a custom Strands agent with DynamoDB status tracking, S3 session persistence and a concurrent tool executor with per-tool timeouts"
 readme = "README.md"
 requires-python = ">=3.10"

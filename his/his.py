@@ -437,7 +437,8 @@ class HISAgent(Agent):
                     "call_count": metrics.call_count,
                     "total_time": metrics.total_time,
                 } for tool_name, metrics in tool_metrics.items()},
-                "model_id": self.model.get_config().model_id if isinstance(self.model, BedrockModel) else None,  # TODO
+                # TODO
+                "model_id": self.model.config.get('model_id', None) if isinstance(self.model, BedrockModel) else None,
             }
 
             write_dynamo(
