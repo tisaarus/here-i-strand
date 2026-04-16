@@ -7,7 +7,6 @@ and a concurrent tool executor with per-tool timeouts.
 import asyncio
 import json
 import re
-import threading
 import time
 import uuid
 from datetime import datetime
@@ -30,9 +29,9 @@ from strands.tools.executors import ConcurrentToolExecutor
 from strands.tools.executors._executor import ToolExecutor
 from strands.types._events import ToolResultEvent
 from strands.types.content import Messages, SystemContentBlock
+from strands.types.exceptions import ModelThrottledException
 from strands.types.tools import ToolResult, ToolUse
 from strands.types.traces import AttributeValue
-from strands.types.exceptions import ModelThrottledException
 
 from his.logging.logging import _init_logger
 
@@ -98,81 +97,28 @@ def write_dynamo(
         logger.error(f"Error writing to DynamoDB for session {session_id}: {e}")
 
 
-def ping_status_task(status_dynamo_table_name: str, session_id: str, agent_id: str, stop_event: threading.Event):
-    """
-    Background task that periodically updates the agent status in DynamoDB.
-
-    Writes a 'running' status every 20 seconds until stop_event is set,
-    then writes a 'finished' status before exiting.
-
-    Args:
-        status_dynamo_table_name: DynamoDB table name for status tracking.
-        session_id: Unique identifier for the current session.
-        agent_id: Unique identifier for the agent instance.
-        stop_event: Threading event to signal when to stop the ping loop.
-    """
-    try:
-        while not stop_event.is_set():
-            logger.info(f"PING Starting - Session {session_id}")
-            try:
-                client = boto3.client('dynamodb')
-                client.put_item(TableName=status_dynamo_table_name, Item={
-                    'session_id': {'S': session_id},
-                    'event_id': {'S': str(uuid.uuid4())},
-                    'agent_id': {'S': agent_id},
-                    'evt_type': {'S': 'PING'},
-                    'evt_message': {'S': 'running'},
-                    'evt_datetime': {'S': str(datetime.now())}
-                })
-                logger.info(f"PING Completed - Session {session_id}")
-            except Exception as e:
-                logger.error(f"Error updating DynamoDB ping status for session {session_id}: {e}")
-
-            time.sleep(20)
-        logger.info(f"PING Stopped - Session {session_id}")
-        client = boto3.client('dynamodb')
-        client.put_item(TableName=status_dynamo_table_name, Item={
-            'session_id': {'S': session_id},
-            'event_id': {'S': str(uuid.uuid4())},
-            'agent_id': {'S': agent_id},
-            'evt_type': {'S': 'PING'},
-            'evt_message': {'S': 'finished'},
-            'evt_datetime': {'S': str(datetime.now())}
-        })
-    except Exception as e:
-        logger.error(f"Error in ping_status_task for session {session_id}: {e}")
-
-
 def event_loop_tracker(**kwargs):
     """
     Callback that records event-loop milestones in DynamoDB.
 
-    Records the following milestones: init_event_loop, start_event_loop,
-    message, result, and force_stop. Stops the ping task when result
-    or force_stop is received.
+    Records the following milestones: init_event_loop, result, and force_stop.
 
     Kwargs:
-        stop_ping_event: Threading event to signal ping task termination.
         status_dynamo_table_name: DynamoDB table name (default: "AgentCoreAgentStatus").
         session_id: Session identifier (default: "default").
         agent_id: Agent identifier (default: "default").
         agent_name: Agent name for tracking (default: "default").
         init_event_loop: If True, records initialization milestone.
-        start_event_loop: If True, records start milestone.
-        message: If present, records message milestone.
-        result: If present, records result milestone and stops ping.
-        force_stop: If True, records force_stop milestone and stops ping.
+        result: If present, records result milestone.
+        force_stop: If True, records force_stop milestone.
     """
-    stop_ping_event: threading.Event = kwargs.get("stop_ping_event")
     field_to_update = None
     if kwargs.get("init_event_loop"):
         field_to_update = "init_event_loop"
     elif "result" in kwargs:
         field_to_update = "result"
-        stop_ping_event.set()
     elif kwargs.get("force_stop"):
         field_to_update = "force_stop"
-        stop_ping_event.set()
 
     if field_to_update:
         client = boto3.client('dynamodb')
@@ -285,13 +231,10 @@ class HISAgent(Agent):
     Strands agent with DynamoDB status tracking and S3 session persistence.
 
     Extends the base Strands Agent with:
-    - A daemon thread that pings status to DynamoDB every 20 seconds
     - S3-based session persistence for conversation history
     - Event loop tracking via callback handler
     - Default system prompt enforcing DynamoDB status reporting
-
-    The ping thread automatically stops when the event loop completes
-    (result or force_stop received).
+    - Bedrock throttling telemetry persisted to DynamoDB
 
     Args:
         bucket_name: S3 bucket name for session persistence.
@@ -354,12 +297,6 @@ class HISAgent(Agent):
             agent_id=agent_id or "default",
         )
         hooks = list(hooks) + [his_retry_hook] if hooks is not None else [his_retry_hook]
-        stop_ping_event = threading.Event()
-        ping_status_task_thread = threading.Thread(
-            target=ping_status_task,
-            args=(status_dynamo_table_name, session_id, agent_id or "default", stop_ping_event),
-            daemon=True
-        )
 
         combined_system_prompt = self._build_system_prompt(
             system_prompt,
@@ -376,7 +313,6 @@ class HISAgent(Agent):
             structured_output_model=structured_output_model,
             callback_handler=callback_handler or partial(
                 event_loop_tracker,
-                stop_ping_event=stop_ping_event,
                 status_dynamo_table_name=status_dynamo_table_name,
                 bucket_name=bucket_name,
                 session_id=session_id,
@@ -400,16 +336,14 @@ class HISAgent(Agent):
             tool_executor=tool_executor,
             retry_strategy=retry_strategy,
         )
-        ping_status_task_thread.start()
 
     def __call__(self, *args: Any, **kwargs: Any) -> AgentResult:
         """
-        Run the agent and return the AgentResult, enriched with the underlying model id.
+        Run the agent and return the resulting AgentResult.
 
         Besides delegating to the base Agent implementation, this method:
         - Logs usage statistics to DynamoDB (`AGENT_STATS` event).
         - Logs the final structured result to DynamoDB (`RESULT` event).
-        - Attaches a `model_id` attribute to the returned AgentResult when available.
         """
         start_time = time.perf_counter()
         response = super().__call__(*args, **kwargs)
@@ -620,7 +554,7 @@ class TimeoutConcurrentToolExecutor(ConcurrentToolExecutor):
             task_id: int,
             task_queue: asyncio.Queue,
             task_event: asyncio.Event,
-            structured_output_context: "StructuredOutputContext | None",
+            structured_output_context: Any | None,
     ) -> None:
         """Consume the tool stream and enqueue events so the caller can wrap with asyncio.wait_for."""
         events = ToolExecutor._stream_with_trace(
@@ -649,7 +583,7 @@ class TimeoutConcurrentToolExecutor(ConcurrentToolExecutor):
             task_queue: asyncio.Queue,
             task_event: asyncio.Event,
             stop_event: object,
-            structured_output_context: "StructuredOutputContext | None",
+            structured_output_context: Any | None,
     ) -> None:
         """Run a single tool with timeout; on timeout, append an error result and continue."""
         tool_use_id = str(tool_use.get("toolUseId", ""))

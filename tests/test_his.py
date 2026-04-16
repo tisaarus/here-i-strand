@@ -1,9 +1,8 @@
 """
-Unit tests for his.his: event_loop_tracker, ping_status_task, HISAgent,
+Unit tests for his.his: event_loop_tracker, HISAgent,
 TimeoutConcurrentToolExecutor, and write_dynamo.
 """
 import asyncio
-import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -15,7 +14,6 @@ from his.his import (
     HISBedrockThrottlingLogger,
     TimeoutConcurrentToolExecutor,
     event_loop_tracker,
-    ping_status_task,
     write_dynamo,
 )
 
@@ -27,10 +25,8 @@ class TestEventLoopTracker:
     def test_sets_init_event_loop_field(self, mock_boto3):
         mock_client = MagicMock()
         mock_boto3.client.return_value = mock_client
-        stop_event = threading.Event()
 
         event_loop_tracker(
-            stop_ping_event=stop_event,
             init_event_loop=True,
             status_dynamo_table_name="TestTable",
             session_id="sess-123",
@@ -46,38 +42,31 @@ class TestEventLoopTracker:
         assert call_kw["Item"]["agent_id"]["S"] == "TestAgentId"
         assert call_kw["Item"]["evt_type"]["S"] == "EVENT_LOOP"
         assert call_kw["Item"]["evt_message"]["S"] == "init_event_loop"
-        assert not stop_event.is_set()
 
     @patch("his.his.boto3")
-    def test_result_sets_stop_ping_event_and_field(self, mock_boto3):
+    def test_result_sets_result_field(self, mock_boto3):
         mock_client = MagicMock()
         mock_boto3.client.return_value = mock_client
-        stop_event = threading.Event()
 
         event_loop_tracker(
-            stop_ping_event=stop_event,
             result=None,
             status_dynamo_table_name="T",
             session_id="s3",
         )
 
-        assert stop_event.is_set()
         call_kw = mock_client.put_item.call_args[1]
         assert call_kw["Item"]["evt_message"]["S"] == "result"
 
     @patch("his.his.boto3")
-    def test_force_stop_sets_stop_ping_event_and_field(self, mock_boto3):
+    def test_force_stop_sets_force_stop_field(self, mock_boto3):
         mock_client = MagicMock()
         mock_boto3.client.return_value = mock_client
-        stop_event = threading.Event()
 
         event_loop_tracker(
-            stop_ping_event=stop_event,
             force_stop=True,
             session_id="s4",
         )
 
-        assert stop_event.is_set()
         call_kw = mock_client.put_item.call_args[1]
         assert call_kw["Item"]["evt_message"]["S"] == "force_stop"
 
@@ -85,10 +74,8 @@ class TestEventLoopTracker:
     def test_default_table_and_session_when_missing(self, mock_boto3):
         mock_client = MagicMock()
         mock_boto3.client.return_value = mock_client
-        stop_event = threading.Event()
 
         event_loop_tracker(
-            stop_ping_event=stop_event,
             init_event_loop=True,
         )
 
@@ -101,10 +88,8 @@ class TestEventLoopTracker:
     def test_agent_id_defaults_to_default_when_not_provided(self, mock_boto3):
         mock_client = MagicMock()
         mock_boto3.client.return_value = mock_client
-        stop_event = threading.Event()
 
         event_loop_tracker(
-            stop_ping_event=stop_event,
             init_event_loop=True,
             status_dynamo_table_name="TestTable",
             session_id="sess-123",
@@ -113,54 +98,6 @@ class TestEventLoopTracker:
 
         call_kw = mock_client.put_item.call_args[1]
         assert call_kw["Item"]["agent_id"]["S"] == "default"
-
-
-class TestPingStatusTask:
-    """Tests for ping_status_task background thread."""
-
-    @patch("his.his.time.sleep")
-    @patch("his.his.boto3")
-    def test_updates_dynamodb_running_then_finished_when_stop_set_after_first_sleep(
-            self, mock_boto3, mock_sleep
-    ):
-        mock_client = MagicMock()
-        mock_boto3.client.return_value = mock_client
-        stop_event = threading.Event()
-
-        def stop_after_first_sleep(*_args, **_kwargs):
-            stop_event.set()
-
-        mock_sleep.side_effect = stop_after_first_sleep
-
-        ping_status_task("StatusTable", "session-xyz", "agent-123", stop_event)
-
-        assert mock_client.put_item.call_count >= 2
-        calls = mock_client.put_item.call_args_list
-        first_item = calls[0][1]["Item"]
-        assert first_item["evt_message"]["S"] == "running"
-        assert first_item["agent_id"]["S"] == "agent-123"
-        assert "event_id" in first_item
-        last_item = calls[-1][1]["Item"]
-        assert last_item["evt_message"]["S"] == "finished"
-        assert "event_id" in last_item
-        assert first_item["event_id"]["S"] != last_item["event_id"]["S"]
-
-    @patch("his.his.time.sleep")
-    @patch("his.his.boto3")
-    def test_finished_update_uses_correct_table_and_key(self, mock_boto3, mock_sleep):
-        mock_client = MagicMock()
-        mock_boto3.client.return_value = mock_client
-        stop_event = threading.Event()
-        mock_sleep.side_effect = lambda *a, **k: stop_event.set()
-
-        ping_status_task("MyStatusTable", "my-session-id", "my-agent-id", stop_event)
-
-        last_call_kw = mock_client.put_item.call_args_list[-1][1]
-        assert last_call_kw["TableName"] == "MyStatusTable"
-        assert last_call_kw["Item"]["session_id"]["S"] == "my-session-id"
-        assert last_call_kw["Item"]["agent_id"]["S"] == "my-agent-id"
-        assert last_call_kw["Item"]["evt_message"]["S"] == "finished"
-        assert "event_id" in last_call_kw["Item"]
 
 
 class TestTimeoutConcurrentToolExecutor:
@@ -222,11 +159,10 @@ class TestTimeoutConcurrentToolExecutor:
 class TestHISAgent:
     """Tests for HISAgent construction and wiring."""
 
-    @patch("his.his.ping_status_task")
     @patch("his.his.boto3")
     @patch("his.his.S3SessionManager")
-    def test_constructs_with_expected_session_manager_and_starts_ping_thread(
-            self, mock_s3_manager, mock_boto3, mock_ping_task
+    def test_constructs_with_expected_session_manager(
+            self, mock_s3_manager, mock_boto3
     ):
         mock_s3_manager.return_value = MagicMock()
         mock_boto3.client.return_value = MagicMock()
@@ -244,13 +180,11 @@ class TestHISAgent:
             prefix="ac-sessions/TestAgent",
         )
         assert agent.name == "TestAgent"
-        assert threading.active_count() >= 1
 
-    @patch("his.his.ping_status_task")
     @patch("his.his.boto3")
     @patch("his.his.S3SessionManager")
     def test_constructs_with_agent_id(
-            self, mock_s3_manager, mock_boto3, mock_ping_task
+            self, mock_s3_manager, mock_boto3
     ):
         mock_s3_manager.return_value = MagicMock()
         mock_boto3.client.return_value = MagicMock()
@@ -266,11 +200,10 @@ class TestHISAgent:
         assert agent.agent_id == "agent-unique-123"
         assert agent.name == "TestAgent"
 
-    @patch("his.his.ping_status_task")
     @patch("his.his.boto3")
     @patch("his.his.S3SessionManager")
     def test_call_attaches_model_id_to_result(
-            self, mock_s3_manager, mock_boto3, mock_ping_task, monkeypatch
+            self, mock_s3_manager, mock_boto3, monkeypatch
     ):
         mock_s3_manager.return_value = MagicMock()
         mock_boto3.client.return_value = MagicMock()
@@ -278,6 +211,7 @@ class TestHISAgent:
         class DummyModel:
             def __init__(self) -> None:
                 self.model_id = "dummy-model-id"
+                self.stateful = False
 
         expected_result = SimpleNamespace()
 
@@ -308,17 +242,18 @@ class TestHISAgent:
         # just ensure the call succeeds and does not inject a model_id attribute.
         assert getattr(result, "model_id", "missing") == "missing"
 
-    @patch("his.his.ping_status_task")
     @patch("his.his.boto3")
     @patch("his.his.S3SessionManager")
     def test_call_attaches_model_id_none_when_unavailable(
-            self, mock_s3_manager, mock_boto3, mock_ping_task, monkeypatch
+            self, mock_s3_manager, mock_boto3, monkeypatch
     ):
         mock_s3_manager.return_value = MagicMock()
         mock_boto3.client.return_value = MagicMock()
 
         class DummyModelWithoutId:
             """Model provider without a public model_id."""
+
+            stateful = False
 
         expected_result = SimpleNamespace()
 
@@ -346,6 +281,21 @@ class TestHISAgent:
         assert result is expected_result
         # When the model has no identifier, __call__ should not inject any model_id.
         assert getattr(result, "model_id", "missing") == "missing"
+
+    @patch("his.his.boto3")
+    @patch("his.his.S3SessionManager")
+    def test_constructs_without_session_manager_when_bucket_is_missing(
+            self, mock_s3_manager, mock_boto3
+    ):
+        mock_boto3.client.return_value = MagicMock()
+
+        HISAgent(
+            status_dynamo_table_name="StatusTable",
+            session_id="sess-1",
+            name="TestAgent",
+        )
+
+        mock_s3_manager.assert_not_called()
 
 
 class TestWriteDynamo:

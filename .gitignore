@@ -4,9 +4,7 @@ venv/
 env/
 .env.local
 .env.*.local
-
-# Environment (uncomment if you don't want to commit secrets)
-# .env
+.env
 
 # Python
 __pycache__/

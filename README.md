@@ -47,8 +47,8 @@ here-i-strand/
 ├── .env.example             # Example env vars (for your app)
 │
 ├── his/                      # Main package
-│   ├── __init__.py           # HISAgent, TimeoutConcurrentToolExecutor, event_loop_tracker, ping_status_task, write_dynamo
-│   ├── his.py                # HISAgent, TimeoutConcurrentToolExecutor, ping, event_loop_tracker, write_dynamo
+│   ├── __init__.py           # HISAgent, TimeoutConcurrentToolExecutor, event_loop_tracker, write_dynamo
+│   ├── his.py                # HISAgent, TimeoutConcurrentToolExecutor, event_loop_tracker, write_dynamo
 │   └── logging/
 │       └── logging.py
 │
@@ -59,9 +59,9 @@ here-i-strand/
 
 ## Main components
 
-- **`HISAgent`**: Strands agent with a DynamoDB ping thread and S3 sessions. You pass `status_dynamo_table_name`, `bucket_name`, `session_id`, and optionally `name` and `agent_id` so the ping and tracker use your table and bucket. Includes a default system prompt that enforces DynamoDB status reporting at key milestones. The `write_dynamo` tool is automatically added to the agent's tools.
+- **`HISAgent`**: Strands agent with DynamoDB status tracking and optional S3-backed sessions. You pass `status_dynamo_table_name`, `session_id`, and optionally `bucket_name`, `name`, and `agent_id` so the tracker and session persistence use your table and bucket. Includes a default system prompt that enforces DynamoDB status reporting at key milestones. The `write_dynamo` tool is automatically added to the agent's tools.
 - **`TimeoutConcurrentToolExecutor`**: Tool executor with a per-invocation timeout (default: 300s); if a tool exceeds the limit, an error is returned and execution continues with the rest.
-- **`event_loop_tracker`**: Callback that writes event-loop milestones (`init_event_loop`, `result`, `force_stop`) to DynamoDB along with session and agent identifiers, and stops the ping thread when the loop finishes.
+- **`event_loop_tracker`**: Callback that writes event-loop milestones (`init_event_loop`, `result`, `force_stop`) to DynamoDB along with session and agent identifiers.
 - **`write_dynamo`**: Strands tool for writing custom event records to DynamoDB for agent tracking and observability. Automatically included in `HISAgent`. Each call creates a new append-only event item identified by a composite key (`session_id`, `event_id`).
 - **`DEFAULT_DYNAMODB_REPORTING_PROMPT_TEMPLATE`**: Template for the default system prompt that instructs the agent to report status updates to DynamoDB at key milestones such as `START`, `TOOLING`, `MODEL_INVOCATION`, `PROGRESS`, `COMPLETION`, and `ERROR`. The template is populated with the actual `table_name`, `session_id`, and `agent_id` values when the agent is created and explicitly instructs the agent to keep this reporting completely invisible to the end user.
 - **`HISBedrockThrottlingLogger`**: Hook provider that listens for `ModelThrottledException` events and writes `BEDROCK_THROTTLING` records to DynamoDB for observability, independent of the system prompt.
@@ -72,9 +72,9 @@ When you create an `HISAgent`, the following happens automatically:
 
 1. **System prompt**: The `DEFAULT_DYNAMODB_REPORTING_PROMPT_TEMPLATE` is formatted with your `status_dynamo_table_name`, `session_id`, and `agent_id` and prepended to any custom system prompt you provide. It instructs the agent to report status at key milestones (`START`, `TOOLING`, `MODEL_INVOCATION`, `PROGRESS`, `COMPLETION`, `ERROR`) while keeping this reporting hidden from the user.
 2. **Tools**: The `write_dynamo` tool is automatically added to your tools list, enabling the agent to write status updates to DynamoDB.
-3. **Ping thread**: A daemon thread starts that pings DynamoDB every 20 seconds with a "running" status until the agent completes.
+3. **Session persistence**: If you provide `bucket_name`, the agent uses `S3SessionManager` to persist session history. If `bucket_name` is omitted, no session manager is created.
 4. **Event tracking**: The `event_loop_tracker` callback records event-loop milestones to DynamoDB.
-5. **Result enrichment**: The `__call__` method returns the standard `AgentResult` object, enriched with a `model_id` attribute (best-effort; may be `None` for model providers that do not expose an identifier).
+5. **Invocation telemetry**: The `__call__` method logs `AGENT_STATS` and `RESULT` events to DynamoDB and returns the standard `AgentResult`.
 
 ## DynamoDB status events and schema
 
@@ -86,7 +86,7 @@ The library expects a DynamoDB table where status and telemetry events are writt
 Each item also includes:
 
 - `agent_id`: Agent instance identifier
-- `evt_type`: Event type (e.g. `START`, `TOOLING`, `MODEL_INVOCATION`, `PROGRESS`, `BEDROCK_THROTTLING`, `COMPLETION`, `ERROR`, `PING`, `EVENT_LOOP`, `AGENT_STATS`, `RESULT`)
+- `evt_type`: Event type (e.g. `START`, `TOOLING`, `MODEL_INVOCATION`, `PROGRESS`, `BEDROCK_THROTTLING`, `COMPLETION`, `ERROR`, `EVENT_LOOP`, `AGENT_STATS`, `RESULT`)
 - `evt_message`: Human-readable message describing the event or a JSON-encoded payload
 - `evt_datetime`: ISO datetime of when the event was recorded
 
