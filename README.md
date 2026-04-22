@@ -65,6 +65,7 @@ here-i-strand/
 - **`write_dynamo`**: Strands tool for writing custom event records to DynamoDB for agent tracking and observability. Automatically included in `HISAgent`. Each call creates a new append-only event item identified by a composite key (`session_id`, `event_id`).
 - **`DEFAULT_DYNAMODB_REPORTING_PROMPT_TEMPLATE`**: Template for the default system prompt that instructs the agent to report status updates to DynamoDB at key milestones such as `START`, `TOOLING`, `MODEL_INVOCATION`, `PROGRESS`, `COMPLETION`, and `ERROR`. The template is populated with the actual `table_name`, `session_id`, and `agent_id` values when the agent is created and explicitly instructs the agent to keep this reporting completely invisible to the end user.
 - **`HISBedrockThrottlingLogger`**: Hook provider that listens for `ModelThrottledException` events and writes `BEDROCK_THROTTLING` records to DynamoDB for observability, independent of the system prompt.
+- **`HISAgent.stream_async`**: Async streaming path that yields events from Strands and, on the final `result` event, persists `AGENT_STATS` and `RESULT` telemetry to DynamoDB.
 
 ## Default behavior
 
@@ -74,7 +75,7 @@ When you create an `HISAgent`, the following happens automatically:
 2. **Tools**: The `write_dynamo` tool is automatically added to your tools list, enabling the agent to write status updates to DynamoDB.
 3. **Session persistence**: If you provide `bucket_name`, the agent uses `S3SessionManager` to persist session history. If `bucket_name` is omitted, no session manager is created.
 4. **Event tracking**: The `event_loop_tracker` callback records event-loop milestones to DynamoDB.
-5. **Invocation telemetry**: The `__call__` method logs `AGENT_STATS` and `RESULT` events to DynamoDB and returns the standard `AgentResult`.
+5. **Invocation telemetry**: Both `__call__` and `stream_async` log `AGENT_STATS` and `RESULT` events to DynamoDB when an invocation completes.
 
 ## DynamoDB status events and schema
 

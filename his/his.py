@@ -337,6 +337,21 @@ class HISAgent(Agent):
             retry_strategy=retry_strategy,
         )
 
+    async def stream_async(self, *args, **kwargs):
+        """
+        Stream agent events asynchronously and persist telemetry on final result.
+
+        This method proxies events from the base Agent stream and, when the
+        terminal `result` event is observed, logs `AGENT_STATS` and `RESULT`
+        records to DynamoDB using the same telemetry helpers as `__call__`.
+        """
+        start = time.perf_counter()
+        async for event in super().stream_async(*args, **kwargs):
+            yield event
+            if event.get("result") is not None:
+                self._log_stats(event["result"], time.perf_counter() - start)
+                self._log_result(event["result"])
+
     def __call__(self, *args: Any, **kwargs: Any) -> AgentResult:
         """
         Run the agent and return the resulting AgentResult.
@@ -396,16 +411,18 @@ class HISAgent(Agent):
           fails it falls back to storing the raw text under the "raw" key.
         """
         try:
-            message = getattr(response, "message", {}) or {}
-            content_list = message.get("content") or []
-            if not isinstance(content_list, list) or not content_list:
-                return
+            candidates = [getattr(response, "message", {}) or {}] + list(reversed(self.messages or []))
 
             raw_text = ""
-            for block in content_list:
-                text_value = (block or {}).get("text")
-                if isinstance(text_value, str) and text_value.strip():
-                    raw_text = text_value.strip()
+            for msg in candidates:
+                if not isinstance(msg, dict) or msg.get("role") != "assistant":
+                    continue
+                for block in msg.get("content") or []:
+                    text_value = (block or {}).get("text")
+                    if isinstance(text_value, str) and text_value.strip():
+                        raw_text = text_value.strip()
+                        break
+                if raw_text:
                     break
 
             if not raw_text:

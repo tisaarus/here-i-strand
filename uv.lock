@@ -571,7 +571,7 @@ wheels = [
 
 [[package]]
 name = "here-i-strand"
-version = "0.2.10"
+version = "0.2.11"
 source = { editable = "." }
 dependencies = [
     { name = "aws-opentelemetry-distro" },
