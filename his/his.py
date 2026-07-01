@@ -17,7 +17,7 @@ import boto3
 from pydantic import BaseModel
 from strands import Agent, tool
 from strands.agent import ConversationManager, AgentResult
-from strands.agent.agent import _DefaultCallbackHandlerSentinel
+from strands.agent.agent import _DefaultCallbackHandlerSentinel, ContextManagerStrategy
 from strands.agent.state import AgentState
 from strands.event_loop._retry import ModelRetryStrategy
 from strands.hooks import HookProvider, HookRegistry
@@ -254,6 +254,7 @@ class HISAgent(Agent):
         agent_id: Unique identifier for the agent instance.
         name: Human-readable name for the agent.
         description: Description of the agent's purpose.
+        context_manager: Context manager for the agent.
         state: Initial agent state.
         hooks: List of hook providers.
         tool_executor: Custom tool executor.
@@ -281,6 +282,7 @@ class HISAgent(Agent):
             name: str | None = None,
             description: str | None = None,
             state: AgentState | dict | None = None,
+            context_manager: ContextManagerStrategy | None = None,
             hooks: list[HookProvider] | None = None,
             tool_executor: ToolExecutor | None = None,
             retry_strategy: ModelRetryStrategy | None = None,
@@ -327,6 +329,7 @@ class HISAgent(Agent):
             name=name,
             description=description,
             state=state,
+            context_manager=context_manager,
             hooks=hooks,
             session_manager=S3SessionManager(
                 session_id=session_id,
@@ -338,19 +341,18 @@ class HISAgent(Agent):
         )
 
     async def stream_async(self, *args, **kwargs):
-        """
-        Stream agent events asynchronously and persist telemetry on final result.
-
-        This method proxies events from the base Agent stream and, when the
-        terminal `result` event is observed, logs `AGENT_STATS` and `RESULT`
-        records to DynamoDB using the same telemetry helpers as `__call__`.
-        """
         start = time.perf_counter()
+        logger.info("[HIS] stream_async START")
         async for event in super().stream_async(*args, **kwargs):
+            # logger.info("[HIS] event keys=%s", list(event.keys()))
             yield event
             if event.get("result") is not None:
+                logger.info("[HIS] before _log_stats")
                 self._log_stats(event["result"], time.perf_counter() - start)
+                logger.info("[HIS] before _log_result")
                 self._log_result(event["result"])
+                logger.info("[HIS] after logs")
+        logger.info("[HIS] stream_async END")
 
     def __call__(self, *args: Any, **kwargs: Any) -> AgentResult:
         """

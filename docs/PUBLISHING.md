@@ -28,7 +28,7 @@ pip install build
 python -m build
 ```
 
-This produces `dist/here_i_strand-0.1.0-py3-none-any.whl` and `dist/here-i-strand-0.1.0.tar.gz`.
+This produces `dist/here_i_strand-<version>-py3-none-any.whl` and `dist/here-i-strand-<version>.tar.gz` (version from `pyproject.toml`, currently `0.2.13`).
 
 ## 4. Upload to PyPI
 
